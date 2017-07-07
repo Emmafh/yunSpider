@@ -9,14 +9,15 @@ import (
 	"io/ioutil"
 	"net/http"
 	//	"regexp"
-	//	"time"
+	"time"
 )
 
 var db *sql.DB
 var err error
 var headers = map[string]string{
-	"User-Agent": "MQQBrowser/26 Mozilla/5.0 (Linux; U; Android 2.3.7; zh-cn; MB200 Build/GRJ22; CyanogenMod-7) AppleWebKit/533.1 (KHTML, like Gecko) Version/4.0 Mobile Safari/533.1",
-	"Referer":    "https://yun.baidu.com/share/home?uk=325913312#category/type=0"}
+	"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.11; rv:50.0) Gecko/20100101 Firefox/50.0 FirePHP/0.7.4",
+	"Referer":    "https://yun.baidu.com/share/home?uk=325913312#category/type=0",
+	"Host":       "pan.baidu.com"}
 
 var uinfoId int64 = 0
 
@@ -36,6 +37,7 @@ type follow_list struct {
 	Fans_count     int
 	User_type      int
 	Is_vip         int
+	Album_count    int
 }
 
 //Mysql初始化
@@ -50,8 +52,24 @@ func init() {
 func main() {
 	//getFollowList(271528372, 0)
 	//	fmt.Println(int64(224 / 24))
-	getTotalFollow(271528372)
-
+	//	getTotalFollow(271528372)
+	var id int64
+	var flag int
+	var uk int64
+	for {
+		rows, _ := db.Query("select id,flag,uk from uinfo where flag=0  limit 1")
+		for rows.Next() {
+			rows.Scan(&id, &flag, &uk)
+		}
+		err = getTotalFollow(uk)
+		if err != nil {
+			panic("接口错误")
+		}
+		stmt, _ := db.Prepare("update uinfo set flag=1 where id=?")
+		stmt.Exec(id)
+		log.Warn("Select new uk:", uk)
+		stmt.Close()
+	}
 }
 
 func getTotalFollow(uk int64) (err error) {
@@ -70,9 +88,10 @@ func getTotalFollow(uk int64) (err error) {
 }
 
 func getFollowList(uk int64, start int) (followNum int, err error) {
-	url := "http://yun.baidu.com/pcloud/friend/getfollowlist?query_uk=%d&limit=24&start=%d&bdstoken=e6f1efec456b92778e70c55ba5d81c3d&channel=chunlei&clienttype=0&web=1&logid=MTQ3NDA3NDg5NzU4NDAuMzQxNDQyMDY2MjA5NDA4NjU="
+	url := "https://pan.baidu.com/pcloud/friend/getfollowlist?query_uk=%d&limit=24&start=%d&bdstoken=0972c74638eb6586990c13efa65f76e7&channel=chunlei&clienttype=0&web=1&logid=MTQ5OTQwNDA2MjM0NzAuMjAyNjc4MzQyMTI4NTU1NA=="
 	real_url := fmt.Sprintf(url, uk, start)
 	res, err := HttpGet(real_url, headers)
+	time.Sleep(time.Second * 2)
 	if err != nil {
 		return 0, err
 	}
@@ -83,6 +102,26 @@ func getFollowList(uk int64, start int) (followNum int, err error) {
 		return 0, err
 	}
 
+	//访问接口速度过快，被限制，休眠1分钟
+	for f.Errno == -55 {
+		time.Sleep(time.Second * 60)
+		log.Info("Timeout 60s")
+		res, err = HttpGet(real_url, headers)
+		if err != nil {
+			return 0, err
+		}
+		err = json.Unmarshal([]byte(res), &f)
+		if err != nil {
+			return 0, err
+		}
+	}
+	if f.Errno != 0 {
+		stmt, _ := db.Prepare("update uinfo set flag=2 where uk=?")
+		stmt.Exec(uk)
+		log.Warn("unavailable uk:", uk)
+		stmt.Close()
+		return 0, nil
+	}
 	for _, v := range f.Follow_list {
 		ifExist := ifKeyExist(v.Follow_uk)
 		if !ifExist {
@@ -120,7 +159,7 @@ func HttpGet(url string, headers map[string]string) (result string, err error) {
 }
 
 func setUinfo(i follow_list) {
-	res, err := db.Exec("INSERT INTO uinfo(uk,uname,avatar_url,intro,pubshare_count,follow_count,fans_count,user_type,is_vip) VALUES(?,?,?,?,?,?,?,?,?)", i.Follow_uk, i.Follow_uname, i.Avatar_url, i.Intro, i.Pubshare_count, i.Follow_count, i.Fans_count, i.User_type, i.Is_vip)
+	res, err := db.Exec("INSERT INTO uinfo(uk,uname,avatar_url,intro,pubshare_count,follow_count,fans_count,user_type,is_vip,album_count) VALUES(?,?,?,?,?,?,?,?,?,?)", i.Follow_uk, i.Follow_uname, i.Avatar_url, i.Intro, i.Pubshare_count, i.Follow_count, i.Fans_count, i.User_type, i.Is_vip, i.Album_count)
 	checkErr(err)
 	id, err := res.LastInsertId()
 
